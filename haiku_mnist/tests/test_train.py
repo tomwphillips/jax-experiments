@@ -2,7 +2,13 @@ import haiku as hk
 import jax.numpy as jnp
 import jax.random
 
-from haiku_mnist.train import load_mnist, loss_fn, softmax_cross_entropy
+from haiku_mnist.train import (
+    accuracy,
+    load_mnist,
+    loss_fn,
+    network_fn,
+    softmax_cross_entropy,
+)
 
 
 def test_load_mnist_train():
@@ -34,8 +40,21 @@ def test_loss_fn():
     key = jax.random.PRNGKey(0)
     images = jax.random.normal(key, (128, 28, 28))
     labels = jax.random.randint(key, (128,), 0, 9)
-    loss_obj = hk.transform(loss_fn)
-    params = loss_obj.init(key, images, labels)
-    loss = loss_obj.apply(params, images, labels)
+
+    network = hk.transform(network_fn)
+    params = network.init(key, images)
+
+    loss = loss_fn(network, params, images, labels)
     assert loss.shape == ()
     assert loss > 0
+
+
+def test_accuracy():
+    key = jax.random.PRNGKey(0)
+    images = jax.random.normal(key, (128, 28, 28))
+    labels = jax.random.randint(key, (128,), 0, 9)
+
+    network = hk.transform(network_fn)
+    params = network.init(key, images)
+
+    assert 0 <= accuracy(network, params, images, labels) <= 1

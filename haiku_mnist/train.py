@@ -1,7 +1,7 @@
 import argparse
 from functools import partial
 import time
-from typing import Iterator, Tuple
+from typing import Any, Iterator, Tuple
 
 import haiku as hk
 import jax
@@ -27,9 +27,15 @@ def softmax_cross_entropy(logits: jnp.array, label: jnp.array) -> jnp.array:
     return -jnp.sum(jax.nn.log_softmax(logits) * ohe_label, axis=-1)
 
 
-# TODO: check why @jax.jit fails here but speeds up first batch significantly
-def loss_fn(images: jnp.array, labels: jnp.array) -> jnp.array:
-    model = hk.Sequential(
+def accuracy(
+    network: hk.Transformed, params: hk.Params, images: jnp.array, labels: jnp.array
+) -> jnp.array:
+    predictions = network.apply(params, images)
+    return jnp.mean(jnp.argmax(predictions, axis=-1) == labels)
+
+
+def network_fn(images: jnp.array) -> jnp.array:
+    network = hk.Sequential(
         [
             hk.Flatten(),
             hk.Linear(512),
@@ -39,12 +45,18 @@ def loss_fn(images: jnp.array, labels: jnp.array) -> jnp.array:
             hk.Linear(10),
         ]
     )
+    return network(images)
 
-    logits = model(images)
+
+# TODO: check why @jax.jit fails here but speeds up first batch significantly
+def loss_fn(
+    network: hk.Transformed, params: hk.Params, images: jnp.array, labels: jnp.array,
+) -> jnp.array:
+    logits = network.apply(params, images)
     return jnp.mean(softmax_cross_entropy(logits, labels))
 
 
-def sgd(param, gradient, learning_rate):
+def sgd(param: hk.Params, gradient: hk.Params, learning_rate: float) -> hk.Params:
     return param - learning_rate * gradient
 
 
@@ -53,29 +65,34 @@ def main(epochs: int, batch_size: int, learning_rate: float) -> None:
     train_eval_data = partial(load_mnist, "train", batch_size=10000)
     test_eval_data = partial(load_mnist, "test", batch_size=10000)
 
-    loss_obj = hk.transform(loss_fn)
+    network = hk.transform(network_fn)
     key = jax.random.PRNGKey(42)
-    params = loss_obj.init(key, *next(train_data()))
+    images, _ = next(train_data())
+    params = network.init(key, images)
 
     sgd_ = partial(sgd, learning_rate=learning_rate)
+    loss_fn_ = partial(loss_fn, network)
 
     for epoch in range(epochs):
         start = time.time()
 
         for images, labels in train_data():
-            grads = jax.grad(loss_obj.apply)(params, images, labels)
+            grads = jax.grad(loss_fn_)(params, images, labels)
             params = jax.tree_multimap(
                 sgd_, params, grads
             )  # TODO: check understanding of tree_multimap
 
         elapsed = time.time() - start
 
-        # TODO: compute accuracy - need to move model out of loss_fn?
-        train_loss = loss_obj.apply(params, *next(train_eval_data()))
-        test_loss = loss_obj.apply(params, *next(test_eval_data()))
-        print(
-            f"Epoch: {epoch + 1} \t Time: {elapsed:.2f} s \t Training loss: {train_loss:.2E} \t Test loss: {test_loss:.2E}"
-        )
+        metrics = {
+            "epoch": epoch + 1,
+            "time": elapsed,
+            "train_loss": loss_fn_(params, *next(train_eval_data())),
+            "train_accuracy": accuracy(network, params, *next(train_eval_data())),
+            "test_loss": loss_fn_(params, *next(test_eval_data())),
+            "test_accuracy": accuracy(network, params, *next(test_eval_data())),
+        }
+        print(metrics)
 
 
 def get_args() -> argparse.Namespace:
